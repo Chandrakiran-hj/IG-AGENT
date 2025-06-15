@@ -1,0 +1,10 @@
+streamlit
+pandas
+PyMuPDF
+openpyxl
+spacy
+sentence-transformers
+torch
+google-generativeai
+langgraph
+nltk 
