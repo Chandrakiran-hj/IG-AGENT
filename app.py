@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF is imported as fitz
+import fitz  
 import re
 import json
 import io
@@ -42,8 +42,8 @@ if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
 if 'results_df' not in st.session_state:
     st.session_state.results_df = None
-if 'progress_messages' not in st.session_state:
-    st.session_state.progress_messages = []
+if 'progress_data' not in st.session_state:
+    st.session_state.progress_data = {}
 if 'document_text_content' not in st.session_state:
     st.session_state.document_text_content = ""
 
@@ -100,7 +100,7 @@ class ProcessingState(TypedDict):
     progress: float
     errors: List[str]
     gemini_api_key: str
-    progress_messages: List[str]
+    progress_data: Dict[str, str]
 
 class DocumentProcessorAgent:
     """Agent responsible for initial document processing and legal statement extraction"""
@@ -333,9 +333,9 @@ class IGCodingAgent:
         **--- IG 2.0 Component Definitions ---**
 
         *   **Attribute (A)**: The actor (individual or corporate) that carries out, or is expected to/to not carry out, the action (i.e., Aim) of the statement.
-        *   **Deontic (D)**: The prescriptive operator defining compulsion or restraint (e.g., must, shall, may, is prohibited).
-        *   **Deontic Category**: 'O' (Obligation), 'P' (Permission), or 'F' (Prohibition).
-        *   **Aim (I)**: The goal or action of the statement assigned to the Attribute.
+        *   **Deontic (D)**: The prescriptive operator. **It MUST be one of the following words ONLY: 'shall', 'must', 'may', 'should'**. If none of these specific words are present, this field must be an empty string.
+        *   **Deontic Category**: 'O' (Obligation: for 'must', 'shall'), 'P' (Permission: for 'may', 'should'). It must correspond to the Deontic. If Deontic is empty, this should be empty.
+        *   **Aim (I)**: The goal or action of the statement assigned to the Attribute. If the statement is a prohibition (e.g., "shall not"), the negation 'not' MUST be part of the Aim.
         *   **Object (B)**: The inanimate or animate receiver of the action in the Aim. Can be direct or indirect.
         *   **Context (Cac & Cex)**:
             *   **Activation Condition (Cac)**: Instantiates the setting or event that *activates* the entire rule. **Heuristic**: Ask "Does this clause set a condition *for the rule to apply*?" (e.g., "Upon receiving final notice...", "Starting January 1...").
@@ -346,10 +346,10 @@ class IGCodingAgent:
         *   **Confidence Score**: A float from 0.0 to 1.0 indicating your confidence in the coding accuracy.
         *   **Confidence Reasoning**: A brief explanation for your confidence score and coding choices.
 
-        **--- High-Quality Example ---**
+        **--- High-Quality Examples ---**
 
+        **Example 1: Regulative Statement**
         Statement: "Upon entrance into agreement with an organic farmer to serve as his/her certifying agent, the organic certifier must inspect the farmer's operation within 60 days."
-
         JSON Output:
         {{
             "attribute": "the organic certifier",
@@ -364,6 +364,24 @@ class IGCodingAgent:
             "statement_type": "regulative",
             "confidence_score": 0.98,
             "confidence_reasoning": "The statement is clearly regulative. The 'Activation Condition' is a procedural event that triggers the rule. The 'Execution Constraint' is a temporal constraint ('timeframe') on the action."
+        }}
+
+        **Example 2: Prohibition Statement**
+        Statement: "A Data Fiduciary shall not undertake tracking or behavioural monitoring of children."
+        JSON Output:
+        {{
+            "attribute": "A Data Fiduciary",
+            "deontic": "shall",
+            "deontic_category": "O",
+            "aim": "not undertake tracking or behavioural monitoring of children",
+            "object": "tracking or behavioural monitoring of children",
+            "activation_condition": "",
+            "execution_constraint": "",
+            "or_else": "",
+            "description": "A Data Fiduciary is obligated not to track or monitor children's behavior.",
+            "statement_type": "regulative",
+            "confidence_score": 0.99,
+            "confidence_reasoning": "The statement is a clear prohibition. The deontic is 'shall', and the negation 'not' is included in the Aim as per instructions."
         }}
 
         **--- Your Turn ---**
@@ -417,6 +435,7 @@ class IGCodingAgent:
                 statement_type="unknown"
             )
 
+
 class WorkflowOrchestrator:
     """LangGraph-based workflow orchestrator for the multi-agent system"""
     
@@ -455,7 +474,7 @@ class WorkflowOrchestrator:
     def _extract_legal_statements_node(self, state: ProcessingState) -> ProcessingState:
         """Node for extracting legal statements"""
         try:
-            state["progress_messages"].append("🔍 Extracting legal statements from document...")
+            state["progress_data"]["extract"] = "running"
             
             legal_statements = self.document_processor.identify_legal_statements(state["document_text"])
             
@@ -463,10 +482,11 @@ class WorkflowOrchestrator:
             state["current_step"] = "Legal statements extracted"
             state["progress"] = 25.0
             
-            state["progress_messages"].append(f"✅ Found {len(legal_statements)} legal statements")
+            state["progress_data"]["extract"] = f"done:{len(legal_statements)}"
             
         except Exception as e:
             state["errors"].append(f"Error in legal statement extraction: {str(e)}")
+            state["progress_data"]["extract"] = "error"
             logger.error(f"Error in extract_legal_statements_node: {e}")
         
         return state
@@ -474,7 +494,7 @@ class WorkflowOrchestrator:
     def _create_atomic_statements_node(self, state: ProcessingState) -> ProcessingState:
         """Node for creating atomic statements"""
         try:
-            state["progress_messages"].append("⚛️ Segmenting into atomic statements...")
+            state["progress_data"]["segment"] = "running"
             
             refined_statements = self.atomic_agent.segment_to_atomic_statements(state["legal_statements"])
             
@@ -488,18 +508,19 @@ class WorkflowOrchestrator:
             state["current_step"] = "Atomic statements created"
             state["progress"] = 50.0
             
-            state["progress_messages"].append(f"✅ Created {len(atomic_statements)} atomic statements")
+            state["progress_data"]["segment"] = f"done:{len(atomic_statements)}"
             
         except Exception as e:
             state["errors"].append(f"Error in atomic statement creation: {str(e)}")
+            state["progress_data"]["segment"] = "error"
             logger.error(f"Error in create_atomic_statements_node: {e}")
         
-            return state
+        return state
 
     def _apply_ig_coding_node(self, state: ProcessingState) -> ProcessingState:
         """Node for applying IG coding"""
         try:
-            state["progress_messages"].append("📝 Applying Institutional Grammar coding...")
+            state["progress_data"]["code"] = "running"
             
             ig_codings = self.ig_agent.code_statements(state["legal_statements"])
             
@@ -507,10 +528,11 @@ class WorkflowOrchestrator:
             state["current_step"] = "IG coding applied"
             state["progress"] = 85.0
             
-            state["progress_messages"].append(f"✅ Applied IG coding to {len(ig_codings)} statements")
+            state["progress_data"]["code"] = f"done:{len(ig_codings)}"
             
         except Exception as e:
             state["errors"].append(f"Error in IG coding: {str(e)}")
+            state["progress_data"]["code"] = "error"
             logger.error(f"Error in apply_ig_coding_node: {e}")
         
         return state
@@ -518,20 +540,21 @@ class WorkflowOrchestrator:
     def _finalize_results_node(self, state: ProcessingState) -> ProcessingState:
         """Node for finalizing results"""
         try:
-            state["progress_messages"].append("📊 Finalizing results...")
+            state["progress_data"]["finalize"] = "running"
             
             state["current_step"] = "Processing complete"
             state["progress"] = 100.0
             
-            state["progress_messages"].append("✅ Processing completed successfully!")
+            state["progress_data"]["finalize"] = "done"
             
         except Exception as e:
             state["errors"].append(f"Error in finalization: {str(e)}")
+            state["progress_data"]["finalize"] = "error"
             logger.error(f"Error in finalize_results_node: {e}")
         
         return state
     
-    def process_document(self, document_text: str, api_key: str, progress_messages: List[str]) -> ProcessingState:
+    def process_document(self, document_text: str, api_key: str, progress_data: Dict[str, str]) -> ProcessingState:
         """Process document through the complete workflow"""
         
         initial_state = ProcessingState(
@@ -543,7 +566,7 @@ class WorkflowOrchestrator:
             progress=0.0,
             errors=[],
             gemini_api_key=api_key,
-            progress_messages=progress_messages
+            progress_data=progress_data
         )
         
         # Define a configurable for the checkpointer to track the conversation
@@ -696,7 +719,7 @@ def main():
         # Clear previous results
         st.session_state.processing_complete = False
         st.session_state.results_df = None
-        st.session_state.progress_messages = []
+        st.session_state.progress_data = {}
 
         try:
             orchestrator = WorkflowOrchestrator(api_key)
@@ -712,16 +735,36 @@ def main():
                         orchestrator.process_document,
                         document_text, 
                         api_key, 
-                        st.session_state.progress_messages
+                        st.session_state.progress_data
                     )
                     
-                    # Update progress UI while processing
+                    # --- New UI Progress Rendering Logic ---
+                    PROGRESS_STEPS = {
+                        "extract": "🔍 Extracting legal statements",
+                        "segment": "⚛️ Segmenting into atomic statements",
+                        "code": "📝 Applying Institutional Grammar coding",
+                        "finalize": "📊 Finalizing and exporting"
+                    }
+
                     while not future.done():
                         status_container.empty()
                         with status_container:
-                            for msg in st.session_state.progress_messages:
-                                st.text(msg)
-                        time.sleep(0.5)
+                            for key, message in PROGRESS_STEPS.items():
+                                status = st.session_state.progress_data.get(key)
+                                if status is None:
+                                    st.text(f"⚪ {message}")
+                                elif status == "running":
+                                    st.text(f"⏳ {message}...")
+                                elif status.startswith("done"):
+                                    parts = status.split(':')
+                                    if len(parts) > 1:
+                                        count = parts[1]
+                                        st.success(f"✅ {message} ({count} found)")
+                                    else:
+                                        st.success(f"✅ {message}")
+                                elif status == "error":
+                                    st.error(f"❌ {message} failed.")
+                        time.sleep(0.2)
                     
                     result = future.result()
 
@@ -730,8 +773,21 @@ def main():
             # Display final status messages
             status_container.empty()
             with status_container:
-                for msg in st.session_state.progress_messages:
-                    st.text(msg)
+                for key, message in PROGRESS_STEPS.items():
+                    status = st.session_state.progress_data.get(key)
+                    if status is None:
+                        st.text(f"⚪ {message}")
+                    elif status == "running": # Should not happen, but for safety
+                        st.text(f"⏳ {message}...")
+                    elif status.startswith("done"):
+                        parts = status.split(':')
+                        if len(parts) > 1:
+                            count = parts[1]
+                            st.success(f"✅ {message} ({count} found)")
+                        else:
+                            st.success(f"✅ {message}")
+                    elif status == "error":
+                        st.error(f"❌ {message} failed.")
 
             # Check for errors from the workflow
             if result["errors"]:
